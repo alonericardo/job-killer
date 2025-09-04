@@ -312,16 +312,16 @@ jQuery(document).ready(function($) {
             success: function(response) {
                 if (response.success) {
                     var html = '<div class="job-killer-notice success">';
-                    html += '<h4>RSS Feed Test Successful!</h4>';
+                    html += '<h4><?php _e('RSS Feed Test Successful!', 'job-killer'); ?></h4>';
                     html += '<p>' + response.data.message + '</p>';
-                    html += '<p><strong>Provider:</strong> ' + response.data.provider_name + '</p>';
+                    html += '<p><strong><?php _e('Provider:', 'job-killer'); ?></strong> ' + response.data.provider_name + '</p>';
                     
                     if (response.data.api_url) {
-                        html += '<p><strong>API URL:</strong> <code>' + response.data.api_url + '</code></p>';
+                        html += '<p><strong><?php _e('API URL:', 'job-killer'); ?></strong> <code>' + response.data.api_url + '</code></p>';
                     }
                     
                     if (response.data.sample_jobs && response.data.sample_jobs.length > 0) {
-                        html += '<h4>Sample Jobs:</h4><ul>';
+                        html += '<h4><?php _e('Sample Jobs:', 'job-killer'); ?></h4><ul>';
                         response.data.sample_jobs.forEach(function(job) {
                             html += '<li><strong>' + job.title + '</strong>';
                             if (job.company) html += ' - ' + job.company;
@@ -336,7 +336,7 @@ jQuery(document).ready(function($) {
                 } else {
                     $('#rss-test-results').html(
                         '<div class="job-killer-notice error">' +
-                        '<h4>RSS Feed Test Failed</h4>' +
+                        '<h4><?php _e('RSS Feed Test Failed', 'job-killer'); ?></h4>' +
                         '<p>' + response.data + '</p>' +
                         '</div>'
                     );
@@ -345,8 +345,8 @@ jQuery(document).ready(function($) {
             error: function() {
                 $('#rss-test-results').html(
                     '<div class="job-killer-notice error">' +
-                    '<h4>RSS Feed Test Failed</h4>' +
-                    '<p>An error occurred while testing the feed.</p>' +
+                    '<h4><?php _e('RSS Feed Test Failed', 'job-killer'); ?></h4>' +
+                    '<p><?php _e('An error occurred while testing the feed.', 'job-killer'); ?></p>' +
                     '</div>'
                 );
             }

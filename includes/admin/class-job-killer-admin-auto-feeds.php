@@ -40,8 +40,19 @@ class Job_Killer_Admin_Auto_Feeds {
      * Render auto feeds page
      */
     public function render_page() {
-        $auto_feeds = get_option('job_killer_auto_feeds', array());
-        $providers = $this->providers_manager->get_providers();
+        $auto_feeds = Job_Killer_Feeds_Store::get_all();
+        $providers = Job_Killer_Providers_Registry::get_all_providers();
+        
+        // Filter to only show providers with instances
+        $available_providers = array();
+        foreach ($providers as $provider_id => $provider_config) {
+            $instance = Job_Killer_Providers_Registry::get_provider_instance($provider_id);
+            if ($instance && method_exists($instance, 'get_provider_info')) {
+                $available_providers[$provider_id] = $instance->get_provider_info();
+            }
+        }
+        
+        $providers = $available_providers;
         
         include JOB_KILLER_PLUGIN_DIR . 'includes/templates/admin/auto-feeds.php';
     }
@@ -56,27 +67,31 @@ class Job_Killer_Admin_Auto_Feeds {
             wp_send_json_error(__('Insufficient permissions', 'job-killer'));
         }
         
-        $feed_id = sanitize_key($_POST['feed_id'] ?? '');
+        $feed_id = intval($_POST['feed_id'] ?? 0);
         
-        if (empty($feed_id)) {
+        if ($feed_id <= 0) {
             wp_send_json_error(__('Feed ID is required', 'job-killer'));
         }
         
-        $auto_feeds = get_option('job_killer_auto_feeds', array());
+        $feed = Job_Killer_Feeds_Store::get($feed_id);
         
-        if (!isset($auto_feeds[$feed_id])) {
+        if (!$feed) {
             wp_send_json_error(__('Feed not found', 'job-killer'));
         }
         
-        $feed_name = $auto_feeds[$feed_id]['name'];
-        unset($auto_feeds[$feed_id]);
-        update_option('job_killer_auto_feeds', $auto_feeds);
+        $result = Job_Killer_Feeds_Store::delete($feed_id);
         
-        $helper = new Job_Killer_Helper();
-        $helper->log('info', 'admin', 
-            sprintf('Auto feed "%s" deleted', $feed_name),
-            array('feed_id' => $feed_id)
-        );
+        if (is_wp_error($result)) {
+            wp_send_json_error($result->get_error_message());
+        }
+        
+        if (class_exists('Job_Killer_Helper')) {
+            $helper = new Job_Killer_Helper();
+            $helper->log('info', 'admin', 
+                sprintf('Auto feed "%s" deleted', $feed['name']),
+                array('feed_id' => $feed_id)
+            );
+        }
         
         wp_send_json_success(array(
             'message' => __('Feed deleted successfully!', 'job-killer')
@@ -93,34 +108,33 @@ class Job_Killer_Admin_Auto_Feeds {
             wp_send_json_error(__('Insufficient permissions', 'job-killer'));
         }
         
-        $feed_id = sanitize_key($_POST['feed_id'] ?? '');
+        $feed_id = intval($_POST['feed_id'] ?? 0);
         
-        if (empty($feed_id)) {
+        if ($feed_id <= 0) {
             wp_send_json_error(__('Feed ID is required', 'job-killer'));
         }
         
-        $auto_feeds = get_option('job_killer_auto_feeds', array());
+        $feed = Job_Killer_Feeds_Store::get($feed_id);
         
-        if (!isset($auto_feeds[$feed_id])) {
+        if (!$feed) {
             wp_send_json_error(__('Feed not found', 'job-killer'));
         }
         
-        $auto_feeds[$feed_id]['active'] = !empty($auto_feeds[$feed_id]['active']) ? false : true;
-        $auto_feeds[$feed_id]['updated_at'] = current_time('mysql');
+        $new_status = Job_Killer_Feeds_Store::toggle_active($feed_id);
         
-        update_option('job_killer_auto_feeds', $auto_feeds);
+        $status = $new_status ? __('activated', 'job-killer') : __('deactivated', 'job-killer');
         
-        $status = $auto_feeds[$feed_id]['active'] ? __('activated', 'job-killer') : __('deactivated', 'job-killer');
-        
-        $helper = new Job_Killer_Helper();
-        $helper->log('info', 'admin', 
-            sprintf('Auto feed "%s" %s', $auto_feeds[$feed_id]['name'], $status),
-            array('feed_id' => $feed_id, 'active' => $auto_feeds[$feed_id]['active'])
-        );
+        if (class_exists('Job_Killer_Helper')) {
+            $helper = new Job_Killer_Helper();
+            $helper->log('info', 'admin', 
+                sprintf('Auto feed "%s" %s', $feed['name'], $status),
+                array('feed_id' => $feed_id, 'active' => $new_status)
+            );
+        }
         
         wp_send_json_success(array(
             'message' => sprintf(__('Feed %s successfully!', 'job-killer'), $status),
-            'active' => $auto_feeds[$feed_id]['active']
+            'active' => $new_status
         ));
     }
     
@@ -134,31 +148,29 @@ class Job_Killer_Admin_Auto_Feeds {
             wp_send_json_error(__('Insufficient permissions', 'job-killer'));
         }
         
-        $feed_id = sanitize_key($_POST['feed_id'] ?? '');
+        $feed_id = intval($_POST['feed_id'] ?? 0);
         
-        if (empty($feed_id)) {
+        if ($feed_id <= 0) {
             wp_send_json_error(__('Feed ID is required', 'job-killer'));
         }
         
-        $auto_feeds = get_option('job_killer_auto_feeds', array());
+        $feed = Job_Killer_Feeds_Store::get($feed_id);
         
-        if (!isset($auto_feeds[$feed_id])) {
+        if (!$feed) {
             wp_send_json_error(__('Feed not found', 'job-killer'));
         }
         
-        $feed_config = $auto_feeds[$feed_id];
-        $provider = $this->providers_manager->get_provider($feed_config['provider_id']);
+        $provider = Job_Killer_Providers_Registry::get_provider_instance($feed['provider']);
         
         if (!$provider) {
             wp_send_json_error(__('Provider not found', 'job-killer'));
         }
         
         try {
-            $imported = $provider->import_jobs($feed_config);
+            $imported = $provider->import_jobs($feed);
             
             // Update last import time
-            $auto_feeds[$feed_id]['last_import'] = current_time('mysql');
-            update_option('job_killer_auto_feeds', $auto_feeds);
+            Job_Killer_Feeds_Store::update_last_import($feed_id, $imported);
             
             wp_send_json_success(array(
                 'message' => sprintf(__('Successfully imported %d jobs!', 'job-killer'), $imported),
@@ -168,12 +180,5 @@ class Job_Killer_Admin_Auto_Feeds {
         } catch (Exception $e) {
             wp_send_json_error($e->getMessage());
         }
-    }
-    
-    /**
-     * Get providers manager
-     */
-    public function get_providers_manager() {
-        return $this->providers_manager;
     }
 }

@@ -69,9 +69,10 @@ if (!defined('ABSPATH')) {
                     </td>
                     <td>
                         <?php
-                        if (!empty($feed['last_import'])) {
-                            $helper = new Job_Killer_Helper();
+                        if (!empty($feed['last_import']) && isset($helper)) {
                             echo $helper->time_ago($feed['last_import']);
+                        } elseif (!empty($feed['last_import'])) {
+                            echo human_time_diff(strtotime($feed['last_import']), current_time('timestamp')) . ' ' . __('ago', 'job-killer');
                         } else {
                             echo '<em>' . __('Nunca', 'job-killer') . '</em>';
                         }
@@ -676,6 +677,55 @@ jQuery(document).ready(function($) {
             },
             complete: function() {
                 $btn.prop('disabled', false).text('<?php _e('Importar', 'job-killer'); ?>');
+            }
+        });
+    });
+    
+    // Test auto feed
+    $('.test-auto-feed').on('click', function() {
+        var feedId = $(this).data('feed-id');
+        var feed = autoFeeds[feedId];
+        
+        if (!feed) {
+            alert('<?php _e('Feed não encontrado', 'job-killer'); ?>');
+            return;
+        }
+        
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('<?php _e('Testando...', 'job-killer'); ?>');
+        
+        $.ajax({
+            url: ajaxurl,
+            type: 'POST',
+            data: {
+                action: 'job_killer_test_provider',
+                nonce: '<?php echo wp_create_nonce('job_killer_admin_nonce'); ?>',
+                provider_id: feed.provider,
+                config: feed
+            },
+            success: function(response) {
+                if (response.success) {
+                    $('#test-results').removeClass('notice-error').addClass('notice-success');
+                    $('#test-results-content').html(
+                        '<p><strong><?php _e('Teste bem-sucedido!', 'job-killer'); ?></strong></p>' +
+                        '<p>' + response.data.message + '</p>'
+                    );
+                } else {
+                    $('#test-results').removeClass('notice-success').addClass('notice-error');
+                    $('#test-results-content').html(
+                        '<p><strong><?php _e('Teste falhou!', 'job-killer'); ?></strong></p>' +
+                        '<p>' + response.data + '</p>'
+                    );
+                }
+                $('#test-results').show();
+            },
+            error: function() {
+                $('#test-results').removeClass('notice-success').addClass('notice-error');
+                $('#test-results-content').html('<p><?php _e('Erro ao testar feed', 'job-killer'); ?></p>');
+                $('#test-results').show();
+            },
+            complete: function() {
+                $btn.prop('disabled', false).text('<?php _e('Testar', 'job-killer'); ?>');
             }
         });
     });

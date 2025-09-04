@@ -46,28 +46,24 @@ class Job_Killer_Importer {
         
         $this->helper->log('info', 'cron', 'Starting scheduled import');
         
-        // Import from traditional RSS feeds
-        $feeds = get_option('job_killer_feeds', array());
+        // Import from all active feeds (new system)
+        $feeds = Job_Killer_Feeds_Store::get_all(true);
         $total_imported = 0;
         
-        foreach ($feeds as $feed_id => $feed_config) {
-            if (empty($feed_config['active'])) {
-                continue;
-            }
-            
+        foreach ($feeds as $feed) {
             try {
-                $imported = $this->import_from_feed($feed_id, $feed_config);
+                $imported = $this->import_from_feed_new($feed);
                 $total_imported += $imported;
                 
                 $this->helper->log('success', 'import', 
-                    sprintf('Imported %d jobs from feed %s', $imported, $feed_config['name']),
-                    array('feed_id' => $feed_id, 'imported' => $imported)
+                    sprintf('Imported %d jobs from feed %s', $imported, $feed['name']),
+                    array('feed_id' => $feed['id'], 'imported' => $imported)
                 );
                 
             } catch (Exception $e) {
                 $this->helper->log('error', 'import', 
-                    sprintf('Failed to import from feed %s: %s', $feed_config['name'], $e->getMessage()),
-                    array('feed_id' => $feed_id, 'error' => $e->getMessage())
+                    sprintf('Failed to import from feed %s: %s', $feed['name'], $e->getMessage()),
+                    array('feed_id' => $feed['id'], 'error' => $e->getMessage())
                 );
             }
             
@@ -75,28 +71,6 @@ class Job_Killer_Importer {
             if (!empty($this->settings['request_delay'])) {
                 sleep($this->settings['request_delay']);
             }
-        }
-        
-        // Import from auto feeds (new providers system)
-        try {
-            if (class_exists('Job_Killer_Providers_Manager')) {
-                $providers_manager = new Job_Killer_Providers_Manager();
-                $auto_imported = $providers_manager->run_auto_imports();
-                $total_imported += $auto_imported;
-            
-                if ($auto_imported > 0) {
-                    $this->helper->log('success', 'import', 
-                        sprintf('Imported %d jobs from auto feeds', $auto_imported),
-                        array('auto_imported' => $auto_imported)
-                    );
-                }
-            }
-            
-        } catch (Exception $e) {
-            $this->helper->log('error', 'import', 
-                'Auto feeds import failed: ' . $e->getMessage(),
-                array('error' => $e->getMessage())
-            );
         }
         
         $this->helper->log('info', 'cron', 
@@ -108,6 +82,30 @@ class Job_Killer_Importer {
         if (!empty($this->settings['email_notifications']) && $total_imported > 0) {
             $this->send_import_notification($total_imported);
         }
+    }
+    
+    /**
+     * Import from feed using new system
+     */
+    private function import_from_feed_new($feed) {
+        $provider_id = $feed['provider'];
+        $provider_instance = Job_Killer_Providers_Registry::get_provider_instance($provider_id);
+        
+        if (!$provider_instance) {
+            throw new Exception(__('Provider not available for feed: ', 'job-killer') . $feed['name']);
+        }
+        
+        if ($provider_id === 'whatjobs') {
+            $imported = $provider_instance->import_jobs($feed);
+        } else {
+            // Use legacy RSS import for other providers
+            $imported = $this->import_from_feed($feed['id'], $feed);
+        }
+        
+        // Update last import time
+        Job_Killer_Feeds_Store::update_last_import($feed['id'], $imported);
+        
+        return $imported;
     }
     
     /**

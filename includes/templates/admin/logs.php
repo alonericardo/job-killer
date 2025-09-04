@@ -124,7 +124,13 @@ if (!defined('ABSPATH')) {
                 </td>
                 <td>
                     <div title="<?php echo esc_attr($log->created_at); ?>">
-                        <?php echo $helper->time_ago($log->created_at); ?>
+                        <?php 
+                        if (isset($helper) && $helper) {
+                            echo $helper->time_ago($log->created_at);
+                        } else {
+                            echo human_time_diff(strtotime($log->created_at), current_time('timestamp')) . ' ' . __('ago', 'job-killer');
+                        }
+                        ?>
                     </div>
                 </td>
                 <td>

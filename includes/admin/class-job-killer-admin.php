@@ -35,6 +35,11 @@ class Job_Killer_Admin {
     public $setup;
     
     /**
+     * Helper instance
+     */
+    public $helper;
+    
+    /**
      * Constructor
      */
     public function __construct() {
@@ -42,6 +47,11 @@ class Job_Killer_Admin {
         
         // Load components after admin_init to ensure all dependencies are available
         add_action('admin_init', array($this, 'load_components'), 5);
+        
+        // Initialize helper early
+        if (class_exists('Job_Killer_Helper')) {
+            $this->helper = new Job_Killer_Helper();
+        }
     }
     
     /**
@@ -282,11 +292,6 @@ class Job_Killer_Admin {
      * Dashboard page
      */
     public function dashboard_page() {
-        // Initialize helper if not available
-        if (!$this->helper && class_exists('Job_Killer_Helper')) {
-            $this->helper = new Job_Killer_Helper();
-        }
-        
         $stats = array();
         $chart_data = array();
         $recent_logs = array();
@@ -295,16 +300,27 @@ class Job_Killer_Admin {
             $stats = $this->helper->get_import_stats();
             $chart_data = $this->helper->get_chart_data(30);
             $recent_logs = $this->helper->get_logs(array('limit' => 10));
+        } else {
+            // Fallback stats
+            $stats = array(
+                'active_jobs' => 0,
+                'today_imports' => 0,
+                'week_imports' => 0,
+                'month_imports' => 0,
+                'feed_stats' => array()
+            );
+            $chart_data = array();
+            $recent_logs = array();
         }
         
         // Get next scheduled import
         $next_import = wp_next_scheduled('job_killer_import_jobs');
         
-        // Get feeds status
-        $feeds = get_option('job_killer_feeds', array());
-        $active_feeds = array_filter($feeds, function($feed) {
-            return !empty($feed['active']);
-        });
+        // Get feeds status from new store
+        $active_feeds = Job_Killer_Feeds_Store::get_all(true);
+        
+        // Pass helper to template
+        $helper = $this->helper;
         
         include JOB_KILLER_PLUGIN_DIR . 'includes/templates/admin/dashboard.php';
     }
@@ -324,7 +340,7 @@ class Job_Killer_Admin {
      * Feeds page
      */
     public function feeds_page() {
-        $feeds = get_option('job_killer_feeds', array());
+        $feeds = Job_Killer_Feeds_Store::get_all();
         
         $rss_providers = null;
         $providers = array();
@@ -333,6 +349,9 @@ class Job_Killer_Admin {
             $rss_providers = new Job_Killer_Rss_Providers();
             $providers = $rss_providers->get_providers();
         }
+        
+        // Pass helper to template
+        $helper = $this->helper;
         
         include JOB_KILLER_PLUGIN_DIR . 'includes/templates/admin/feeds.php';
     }
@@ -377,16 +396,15 @@ class Job_Killer_Admin {
         // Get cron history
         $cron_logs = array();
         
-        if (!$this->helper && class_exists('Job_Killer_Helper')) {
-            $this->helper = new Job_Killer_Helper();
-        }
-        
         if ($this->helper) {
             $cron_logs = $this->helper->get_logs(array(
                 'source' => 'cron',
                 'limit' => 20
             ));
         }
+        
+        // Pass helper to template
+        $helper = $this->helper;
         
         include JOB_KILLER_PLUGIN_DIR . 'includes/templates/admin/scheduling.php';
     }
@@ -395,10 +413,6 @@ class Job_Killer_Admin {
      * Logs page
      */
     public function logs_page() {
-        if (!$this->helper && class_exists('Job_Killer_Helper')) {
-            $this->helper = new Job_Killer_Helper();
-        }
-        
         if (!$this->helper) {
             echo '<div class="notice notice-error"><p>' . __('Helper component not available.', 'job-killer') . '</p></div>';
             return;
@@ -425,6 +439,9 @@ class Job_Killer_Admin {
         
         $log_types = $wpdb->get_col("SELECT DISTINCT type FROM $log_table ORDER BY type");
         $log_sources = $wpdb->get_col("SELECT DISTINCT source FROM $log_table ORDER BY source");
+        
+        // Pass helper to template
+        $helper = $this->helper;
         
         include JOB_KILLER_PLUGIN_DIR . 'includes/templates/admin/logs.php';
     }

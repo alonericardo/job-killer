@@ -109,15 +109,28 @@ if (!defined('ABSPATH')) {
                             <td>
                                 <?php 
                                 $last_import = get_option('job_killer_last_import_' . $feed_id);
-                                echo $last_import ? $helper->time_ago($last_import) : __('Never', 'job-killer');
+                                if ($last_import && $helper) {
+                                    echo $helper->time_ago($last_import);
+                                } elseif ($last_import) {
+                                    echo human_time_diff(strtotime($last_import), current_time('timestamp')) . ' ' . __('ago', 'job-killer');
+                                } else {
+                                    echo __('Never', 'job-killer');
+                                }
                                 ?>
                             </td>
                             <td>
                                 <?php
-                                $feed_stats = array_filter($stats['feed_stats'], function($stat) use ($feed_id) {
-                                    return $stat->feed_id === $feed_id;
-                                });
-                                echo !empty($feed_stats) ? number_format($feed_stats[0]->count) : '0';
+                                global $wpdb;
+                                $imports_table = $wpdb->prefix . 'job_killer_imports';
+                                if ($wpdb->get_var("SHOW TABLES LIKE '$imports_table'")) {
+                                    $count = $wpdb->get_var($wpdb->prepare(
+                                        "SELECT COUNT(*) FROM $imports_table WHERE feed_id = %s",
+                                        $feed_id
+                                    ));
+                                } else {
+                                    $count = 0;
+                                }
+                                echo number_format($count);
                                 ?>
                             </td>
                         </tr>
@@ -160,7 +173,15 @@ if (!defined('ABSPATH')) {
                     <div class="job-killer-log-item">
                         <span class="job-killer-log-type <?php echo esc_attr($log->type); ?>"><?php echo esc_html($log->type); ?></span>
                         <div class="job-killer-log-message"><?php echo esc_html($log->message); ?></div>
-                        <div class="job-killer-log-time"><?php echo $helper->time_ago($log->created_at); ?></div>
+                        <div class="job-killer-log-time">
+                            <?php 
+                            if ($helper) {
+                                echo $helper->time_ago($log->created_at);
+                            } else {
+                                echo human_time_diff(strtotime($log->created_at), current_time('timestamp')) . ' ' . __('ago', 'job-killer');
+                            }
+                            ?>
+                        </div>
                     </div>
                     <?php endforeach; ?>
                 </div>

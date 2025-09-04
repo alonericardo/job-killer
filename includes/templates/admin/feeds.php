@@ -61,18 +61,28 @@ if (!defined('ABSPATH')) {
                     </td>
                     <td>
                         <?php
-                        $last_import = get_option('job_killer_last_import_' . $feed_id);
-                        echo $last_import ? $helper->time_ago($last_import) : __('Never', 'job-killer');
+                        $last_import = $feed['last_import'] ?? '';
+                        if ($last_import && isset($helper) && $helper) {
+                            echo $helper->time_ago($last_import);
+                        } elseif ($last_import) {
+                            echo human_time_diff(strtotime($last_import), current_time('timestamp')) . ' ' . __('ago', 'job-killer');
+                        } else {
+                            echo __('Never', 'job-killer');
+                        }
                         ?>
                     </td>
                     <td>
                         <?php
                         global $wpdb;
                         $imports_table = $wpdb->prefix . 'job_killer_imports';
-                        $count = $wpdb->get_var($wpdb->prepare(
-                            "SELECT COUNT(*) FROM $imports_table WHERE feed_id = %s",
-                            $feed_id
-                        ));
+                        if ($wpdb->get_var("SHOW TABLES LIKE '$imports_table'")) {
+                            $count = $wpdb->get_var($wpdb->prepare(
+                                "SELECT COUNT(*) FROM $imports_table WHERE feed_id = %s",
+                                $feed_id
+                            ));
+                        } else {
+                            $count = 0;
+                        }
                         echo number_format($count);
                         ?>
                     </td>
@@ -91,7 +101,7 @@ if (!defined('ABSPATH')) {
                             
                             <button class="job-killer-btn job-killer-btn-secondary job-killer-toggle-feed" 
                                     data-feed-id="<?php echo esc_attr($feed_id); ?>">
-                                <?php echo !empty($feed['active']) ? __('Deactivate', 'job-killer') : __('Activate', 'job-killer'); ?>
+                                <?php echo $feed['active'] ? __('Deactivate', 'job-killer') : __('Activate', 'job-killer'); ?>
                             </button>
                             
                             <button class="job-killer-btn job-killer-btn-secondary" 
@@ -136,13 +146,13 @@ if (!defined('ABSPATH')) {
             <form id="job-killer-add-feed-form">
                 <div class="job-killer-form-group">
                     <label for="feed_name"><?php _e('Feed Name', 'job-killer'); ?></label>
-                    <input type="text" id="feed_name" name="feed[name]" required>
+                    <input type="text" id="feed_name" name="feed[name]" class="regular-text" required>
                     <p class="description"><?php _e('A descriptive name for this feed', 'job-killer'); ?></p>
                 </div>
 
                 <div class="job-killer-form-group">
                     <label for="feed_url"><?php _e('RSS Feed URL', 'job-killer'); ?></label>
-                    <input type="url" id="feed_url" name="feed[url]" required>
+                    <input type="url" id="feed_url" name="feed[url]" class="regular-text" required>
                     <p class="description"><?php _e('The complete URL to the RSS feed', 'job-killer'); ?></p>
                 </div>
 
@@ -254,12 +264,12 @@ if (!defined('ABSPATH')) {
                 <!-- Same form fields as add modal -->
                 <div class="job-killer-form-group">
                     <label for="edit_feed_name"><?php _e('Feed Name', 'job-killer'); ?></label>
-                    <input type="text" id="edit_feed_name" name="feed[name]" required>
+                    <input type="text" id="edit_feed_name" name="feed[name]" class="regular-text" required>
                 </div>
 
                 <div class="job-killer-form-group">
                     <label for="edit_feed_url"><?php _e('RSS Feed URL', 'job-killer'); ?></label>
-                    <input type="url" id="edit_feed_url" name="feed[url]" required>
+                    <input type="url" id="edit_feed_url" name="feed[url]" class="regular-text" required>
                 </div>
 
                 <div class="job-killer-form-row">
@@ -268,6 +278,10 @@ if (!defined('ABSPATH')) {
                         <select id="edit_feed_category" name="feed[default_category]">
                             <option value=""><?php _e('Select Category', 'job-killer'); ?></option>
                             <?php
+                            $categories = get_terms(array(
+                                'taxonomy' => 'job_listing_category',
+                                'hide_empty' => false
+                            ));
                             foreach ($categories as $category) {
                                 echo '<option value="' . esc_attr($category->name) . '">' . esc_html($category->name) . '</option>';
                             }
@@ -280,6 +294,10 @@ if (!defined('ABSPATH')) {
                         <select id="edit_feed_region" name="feed[default_region]">
                             <option value=""><?php _e('Select Region', 'job-killer'); ?></option>
                             <?php
+                            $regions = get_terms(array(
+                                'taxonomy' => 'job_listing_region',
+                                'hide_empty' => false
+                            ));
                             foreach ($regions as $region) {
                                 echo '<option value="' . esc_attr($region->name) . '">' . esc_html($region->name) . '</option>';
                             }
@@ -309,6 +327,8 @@ if (!defined('ABSPATH')) {
 
 <script>
 jQuery(document).ready(function($) {
+    var feedsData = <?php echo wp_json_encode($feeds); ?>;
+    
     // Test feed functionality
     $('.job-killer-test-feed').on('click', function(e) {
         e.preventDefault();
@@ -317,11 +337,11 @@ jQuery(document).ready(function($) {
         var feedUrl = $button.data('feed-url') || $('#feed_url').val() || $('#edit_feed_url').val();
         
         if (!feedUrl) {
-            alert('Please enter a feed URL first.');
+            alert('<?php _e('Please enter a feed URL first.', 'job-killer'); ?>');
             return;
         }
         
-        $button.prop('disabled', true).html('<span class="job-killer-loading"></span> Testing...');
+        $button.prop('disabled', true).html('<span class="job-killer-loading"></span> <?php _e('Testing...', 'job-killer'); ?>');
         
         $.ajax({
             url: jobKillerAdmin.ajaxUrl,
@@ -334,10 +354,11 @@ jQuery(document).ready(function($) {
             success: function(response) {
                 if (response.success) {
                     $('.job-killer-test-results').html(
-                        '<div class="job-killer-notice success">' +
-                        '<h4>Test Successful!</h4>' +
+                        '<div class="notice notice-success">' +
+                        '<h4><?php _e('Test Successful!', 'job-killer'); ?></h4>' +
                         '<p>' + response.data.message + '</p>' +
-                        '<p><strong>Provider:</strong> ' + response.data.provider_name + '</p>' +
+                        '<p><strong><?php _e('Provider:', 'job-killer'); ?></strong> ' + response.data.provider_name + '</p>' +
+                        (response.data.api_url ? '<p><strong><?php _e('API URL:', 'job-killer'); ?></strong> <code>' + response.data.api_url + '</code></p>' : '') +
                         '</div>'
                     ).show();
                     
@@ -345,8 +366,8 @@ jQuery(document).ready(function($) {
                     $('.job-killer-field-mapping').show();
                 } else {
                     $('.job-killer-test-results').html(
-                        '<div class="job-killer-notice error">' +
-                        '<h4>Test Failed</h4>' +
+                        '<div class="notice notice-error">' +
+                        '<h4><?php _e('Test Failed', 'job-killer'); ?></h4>' +
                         '<p>' + response.data + '</p>' +
                         '</div>'
                     ).show();
@@ -354,14 +375,14 @@ jQuery(document).ready(function($) {
             },
             error: function() {
                 $('.job-killer-test-results').html(
-                    '<div class="job-killer-notice error">' +
-                    '<h4>Test Failed</h4>' +
-                    '<p>An error occurred while testing the feed.</p>' +
+                    '<div class="notice notice-error">' +
+                    '<h4><?php _e('Test Failed', 'job-killer'); ?></h4>' +
+                    '<p><?php _e('An error occurred while testing the feed.', 'job-killer'); ?></p>' +
                     '</div>'
                 ).show();
             },
             complete: function() {
-                $button.prop('disabled', false).html('Test Feed');
+                $button.prop('disabled', false).html('<?php _e('Test Feed', 'job-killer'); ?>');
             }
         });
     });
@@ -369,17 +390,48 @@ jQuery(document).ready(function($) {
     // Edit feed modal
     $('[data-modal="job-killer-edit-feed-modal"]').on('click', function() {
         var feedId = $(this).data('feed-id');
-        var feedData = <?php echo wp_json_encode($feeds); ?>;
-        var feed = feedData[feedId];
+        var feed = feedsData[feedId];
         
         if (feed) {
             $('#edit_feed_id').val(feedId);
             $('#edit_feed_name').val(feed.name);
             $('#edit_feed_url').val(feed.url);
-            $('#edit_feed_category').val(feed.default_category || '');
-            $('#edit_feed_region').val(feed.default_region || '');
+            $('#edit_feed_category').val(feed.parameters && feed.parameters.default_category ? feed.parameters.default_category : '');
+            $('#edit_feed_region').val(feed.parameters && feed.parameters.default_region ? feed.parameters.default_region : '');
             $('#edit_feed_active').prop('checked', feed.active);
         }
+    });
+    
+    // Save feed functionality
+    $('.job-killer-save-feed').on('click', function() {
+        var $btn = $(this);
+        var $form = $btn.closest('.job-killer-modal').find('form');
+        
+        if (!$form[0].checkValidity()) {
+            $form[0].reportValidity();
+            return;
+        }
+        
+        $btn.prop('disabled', true).text('<?php _e('Saving...', 'job-killer'); ?>');
+        
+        $.ajax({
+            url: jobKillerAdmin.ajaxUrl,
+            type: 'POST',
+            data: $form.serialize() + '&action=job_killer_save_feed&nonce=' + jobKillerAdmin.nonce,
+            success: function(response) {
+                if (response.success) {
+                    location.reload();
+                } else {
+                    alert('<?php _e('Error saving feed:', 'job-killer'); ?> ' + response.data);
+                }
+            },
+            error: function() {
+                alert('<?php _e('An error occurred while saving the feed.', 'job-killer'); ?>');
+            },
+            complete: function() {
+                $btn.prop('disabled', false).text('<?php _e('Save Feed', 'job-killer'); ?>');
+            }
+        });
     });
 });
 </script>

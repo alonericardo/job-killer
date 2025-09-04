@@ -33,7 +33,9 @@ class Job_Killer_WhatJobs_Provider {
      * Constructor
      */
     public function __construct() {
-        $this->helper = new Job_Killer_Helper();
+        if (class_exists('Job_Killer_Helper')) {
+            $this->helper = new Job_Killer_Helper();
+        }
     }
     
     /**
@@ -78,6 +80,12 @@ class Job_Killer_WhatJobs_Provider {
                     'default' => 1,
                     'min' => 1,
                     'description' => __('Page number for pagination', 'job-killer')
+                ),
+                'only_today' => array(
+                    'label' => __('Only Today\'s Jobs', 'job-killer'),
+                    'type' => 'checkbox',
+                    'default' => true,
+                    'description' => __('Import only jobs posted today (age_days = 0)', 'job-killer')
                 )
             ),
             'field_mapping' => array(
@@ -96,98 +104,198 @@ class Job_Killer_WhatJobs_Provider {
     }
     
     /**
-     * Build API URL
+     * Build API URL with proper parameters
      */
-    public function build_api_url($config) {
-        $publisher_id = $config['auth']['publisher_id'] ?? '';
-        
+    public static function build_url($publisher_id, $args = array()) {
         if (empty($publisher_id)) {
             throw new Exception(__('Publisher ID is required for WhatJobs API', 'job-killer'));
         }
         
-        // Build base parameters with required fields
-        $params = $this->get_base_api_params($publisher_id);
+        $params = array(
+            'publisher'  => $publisher_id,
+            'user_ip'    => self::get_safe_user_ip(),
+            'user_agent' => self::get_safe_user_agent(),
+            'snippet'    => 'full'
+        );
         
         // Add optional parameters
-        if (!empty($config['parameters']['keyword'])) {
-            $params['keyword'] = sanitize_text_field($config['parameters']['keyword']);
+        if (!empty($args['keyword'])) {
+            $params['keyword'] = sanitize_text_field($args['keyword']);
         }
         
-        if (!empty($config['parameters']['location'])) {
-            $params['location'] = sanitize_text_field($config['parameters']['location']);
+        if (!empty($args['location'])) {
+            $params['location'] = sanitize_text_field($args['location']);
         }
         
-        if (!empty($config['parameters']['limit'])) {
-            $params['limit'] = min(100, max(1, intval($config['parameters']['limit'])));
+        if (!empty($args['limit'])) {
+            $params['limit'] = min(100, max(1, intval($args['limit'])));
         }
         
-        if (!empty($config['parameters']['page'])) {
-            $params['page'] = max(1, intval($config['parameters']['page']));
+        if (!empty($args['page'])) {
+            $params['page'] = max(1, intval($args['page']));
+        }
+        
+        // Only today's jobs by default
+        if (!isset($args['age_days'])) {
+            $params['age_days'] = 0;
+        } else {
+            $params['age_days'] = max(0, intval($args['age_days']));
         }
         
         return add_query_arg($params, self::API_BASE_URL);
     }
     
     /**
-     * Get base API parameters with required fields
+     * Fetch jobs from API
      */
-    private function get_base_api_params($publisher_id) {
-        return array(
-            'publisher'  => $publisher_id,
-            'user_ip'    => urlencode($this->get_user_ip()),
-            'user_agent' => urlencode($this->get_user_agent()),
-            'snippet'    => 'full',
-            'age_days'   => 0 // Only today's jobs
-        );
+    public static function fetch($url, $args = array()) {
+        $response = wp_remote_get($url, array(
+            'timeout' => 30,
+            'headers' => array(
+                'Accept' => 'application/xml',
+                'User-Agent' => self::get_safe_user_agent()
+            )
+        ));
+        
+        if (is_wp_error($response)) {
+            return $response;
+        }
+        
+        $status_code = wp_remote_retrieve_response_code($response);
+        if ($status_code !== 200) {
+            return new WP_Error('http_error', sprintf(__('API returned status code %d', 'job-killer'), $status_code));
+        }
+        
+        $body = wp_remote_retrieve_body($response);
+        if (empty($body)) {
+            return new WP_Error('empty_response', __('Empty response from WhatJobs API', 'job-killer'));
+        }
+        
+        // Log response for debugging (first 500 chars)
+        if (class_exists('Job_Killer_Helper')) {
+            $helper = new Job_Killer_Helper();
+            $helper->log('info', 'whatjobs', 
+                'API Response received',
+                array(
+                    'url' => $url,
+                    'status' => $status_code,
+                    'response_preview' => substr($body, 0, 500)
+                )
+            );
+        }
+        
+        // Parse XML
+        libxml_use_internal_errors(true);
+        $xml = simplexml_load_string($body);
+        
+        if ($xml === false) {
+            $errors = libxml_get_errors();
+            $error_messages = array();
+            foreach ($errors as $error) {
+                $error_messages[] = trim($error->message);
+            }
+            return new WP_Error('xml_error', 'XML parsing failed: ' . implode(', ', $error_messages));
+        }
+        
+        // Parse jobs from WhatJobs XML structure
+        $jobs = array();
+        
+        // WhatJobs structure: <data><job>...</job></data>
+        if (isset($xml->job)) {
+            foreach ($xml->job as $job_xml) {
+                $job = array(
+                    'title' => (string) ($job_xml->title ?? ''),
+                    'company' => (string) ($job_xml->company ?? ''),
+                    'location' => (string) ($job_xml->location ?? ''),
+                    'description' => (string) ($job_xml->snippet ?? ''),
+                    'url' => (string) ($job_xml->url ?? ''),
+                    'job_type' => (string) ($job_xml->job_type ?? ''),
+                    'salary' => (string) ($job_xml->salary ?? ''),
+                    'logo' => (string) ($job_xml->logo ?? ''),
+                    'age_days' => intval($job_xml->age_days ?? 999),
+                    'site' => (string) ($job_xml->site ?? ''),
+                    'date' => current_time('mysql') // Use current time as fallback
+                );
+                
+                // Filter only today's jobs if requested
+                if (!empty($args['only_today']) && $job['age_days'] !== 0) {
+                    continue;
+                }
+                
+                // Skip jobs without essential data
+                if (empty($job['title']) || empty($job['description'])) {
+                    continue;
+                }
+                
+                $jobs[] = $job;
+            }
+        }
+        
+        return $jobs;
     }
     
     /**
-     * Get user IP address with fallback
+     * Get safe user IP for API calls
      */
-    private function get_user_ip() {
-        // Try to get real IP from various headers (for proxy/CDN scenarios)
+    private static function get_safe_user_ip() {
+        // Try to get real IP from various headers
         $ip_headers = array(
-            'HTTP_CF_CONNECTING_IP',     // Cloudflare
-            'HTTP_X_REAL_IP',            // Nginx proxy
-            'HTTP_X_FORWARDED_FOR',      // Standard proxy header
-            'HTTP_X_FORWARDED',          // Proxy header
-            'HTTP_X_CLUSTER_CLIENT_IP',  // Cluster
-            'HTTP_FORWARDED_FOR',        // Proxy header
-            'HTTP_FORWARDED',            // Proxy header
-            'REMOTE_ADDR'                // Standard server variable
+            'HTTP_CF_CONNECTING_IP',
+            'HTTP_X_REAL_IP',
+            'HTTP_X_FORWARDED_FOR',
+            'REMOTE_ADDR'
         );
         
         foreach ($ip_headers as $header) {
             if (!empty($_SERVER[$header])) {
                 $ip = $_SERVER[$header];
                 
-                // Handle comma-separated IPs (X-Forwarded-For can contain multiple IPs)
+                // Handle comma-separated IPs
                 if (strpos($ip, ',') !== false) {
                     $ip = trim(explode(',', $ip)[0]);
                 }
                 
-                // Validate IP address
+                // Validate IP
                 if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
                     return $ip;
                 }
             }
         }
         
-        // Fallback for cron jobs or when no valid IP is found
+        // Fallback for cron jobs
         return '127.0.0.1';
     }
     
     /**
-     * Get user agent with fallback
+     * Get safe user agent for API calls
      */
-    private function get_user_agent() {
-        // Use server user agent if available
+    private static function get_safe_user_agent() {
         if (!empty($_SERVER['HTTP_USER_AGENT'])) {
             return $_SERVER['HTTP_USER_AGENT'];
         }
         
-        // Fallback for cron jobs or missing user agent
+        // Fallback for cron jobs
         return 'JobKillerBot/1.0 (WordPress/' . get_bloginfo('version') . '; ' . get_bloginfo('url') . ')';
+    }
+    /**
+     * Build API URL
+     */
+    public function build_api_url($config) {
+        $publisher_id = '';
+        
+        // Handle different config structures
+        if (isset($config['auth']['publisher_id'])) {
+            $publisher_id = $config['auth']['publisher_id'];
+        } elseif (isset($config['publisher_id'])) {
+            $publisher_id = $config['publisher_id'];
+        }
+        
+        if (empty($publisher_id)) {
+            throw new Exception(__('Publisher ID is required for WhatJobs API', 'job-killer'));
+        }
+        
+        $args = $config['parameters'] ?? array();
+        return self::build_url($publisher_id, $args);
     }
     
     /**
@@ -197,33 +305,22 @@ class Job_Killer_WhatJobs_Provider {
         try {
             $url = $this->build_api_url($config);
             
-            $this->helper->log('info', 'whatjobs', 
-                'Testing WhatJobs API connection',
-                array('url' => $url, 'config' => $config)
-            );
-            
-            $response = wp_remote_get($url, array(
-                'timeout' => 30,
-                'user-agent' => $this->get_user_agent()
-            ));
-            
-            if (is_wp_error($response)) {
-                return array(
-                    'success' => false,
-                    'message' => $response->get_error_message()
+            if ($this->helper) {
+                $this->helper->log('info', 'whatjobs', 
+                    'Testing WhatJobs API connection',
+                    array('url' => $url)
                 );
             }
             
-            $status_code = wp_remote_retrieve_response_code($response);
-            if ($status_code !== 200) {
+            $args = array('only_today' => true);
+            $jobs = self::fetch($url, $args);
+            
+            if (is_wp_error($jobs)) {
                 return array(
                     'success' => false,
-                    'message' => sprintf(__('API returned status code %d', 'job-killer'), $status_code)
+                    'message' => $jobs->get_error_message()
                 );
             }
-            
-            $body = wp_remote_retrieve_body($response);
-            $jobs = $this->parse_xml_response($body);
             
             return array(
                 'success' => true,
@@ -245,27 +342,19 @@ class Job_Killer_WhatJobs_Provider {
      * Import jobs from API
      */
     public function import_jobs($config) {
-        $this->helper->log('info', 'whatjobs', 'Starting WhatJobs import', array('config' => $config));
+        if ($this->helper) {
+            $this->helper->log('info', 'whatjobs', 'Starting WhatJobs import');
+        }
         
         try {
             $url = $this->build_api_url($config);
             
-            $response = wp_remote_get($url, array(
-                'timeout' => 60,
-                'user-agent' => $this->get_user_agent()
-            ));
+            $args = array('only_today' => !empty($config['parameters']['only_today']));
+            $jobs = self::fetch($url, $args);
             
-            if (is_wp_error($response)) {
-                throw new Exception('HTTP request failed: ' . $response->get_error_message());
+            if (is_wp_error($jobs)) {
+                throw new Exception('API request failed: ' . $jobs->get_error_message());
             }
-            
-            $status_code = wp_remote_retrieve_response_code($response);
-            if ($status_code !== 200) {
-                throw new Exception('API returned status code: ' . $status_code);
-            }
-            
-            $body = wp_remote_retrieve_body($response);
-            $jobs = $this->parse_xml_response($body);
             
             // Filter and import jobs
             $imported_count = 0;
@@ -277,83 +366,24 @@ class Job_Killer_WhatJobs_Provider {
                 }
             }
             
-            $this->helper->log('success', 'whatjobs', 
-                sprintf('WhatJobs import completed. Imported %d jobs.', $imported_count),
-                array('imported' => $imported_count, 'total_found' => count($jobs))
-            );
+            if ($this->helper) {
+                $this->helper->log('success', 'whatjobs', 
+                    sprintf('WhatJobs import completed. Imported %d jobs.', $imported_count),
+                    array('imported' => $imported_count, 'total_found' => count($jobs))
+                );
+            }
             
             return $imported_count;
             
         } catch (Exception $e) {
-            $this->helper->log('error', 'whatjobs', 
-                'WhatJobs import failed: ' . $e->getMessage(),
-                array('error' => $e->getMessage())
-            );
+            if ($this->helper) {
+                $this->helper->log('error', 'whatjobs', 
+                    'WhatJobs import failed: ' . $e->getMessage(),
+                    array('error' => $e->getMessage())
+                );
+            }
             throw $e;
         }
-    }
-    
-    /**
-     * Parse XML response
-     */
-    private function parse_xml_response($xml_content) {
-        libxml_use_internal_errors(true);
-        $xml = simplexml_load_string($xml_content);
-        
-        if ($xml === false) {
-            $errors = libxml_get_errors();
-            $error_messages = array();
-            foreach ($errors as $error) {
-                $error_messages[] = trim($error->message);
-            }
-            throw new Exception('XML parsing failed: ' . implode(', ', $error_messages));
-        }
-        
-        $jobs = array();
-        
-        if (isset($xml->job)) {
-            foreach ($xml->job as $job_xml) {
-                $job = $this->parse_job_xml($job_xml);
-                if (!empty($job)) {
-                    $jobs[] = $job;
-                }
-            }
-        }
-        
-        return $jobs;
-    }
-    
-    /**
-     * Parse individual job XML
-     */
-    private function parse_job_xml($job_xml) {
-        $job = array();
-        
-        // Basic fields
-        $job['title'] = (string) $job_xml->title;
-        $job['company'] = (string) $job_xml->company;
-        $job['location'] = (string) $job_xml->location;
-        $job['description'] = $this->clean_description((string) $job_xml->description);
-        $job['url'] = (string) $job_xml->url;
-        $job['job_type'] = (string) $job_xml->job_type;
-        $job['salary'] = (string) $job_xml->salary;
-        $job['logo'] = (string) $job_xml->logo;
-        $job['age_days'] = intval($job_xml->age_days);
-        $job['date'] = (string) $job_xml->date;
-        
-        // Additional fields
-        $job['category'] = (string) $job_xml->category;
-        $job['subcategory'] = (string) $job_xml->subcategory;
-        $job['country'] = (string) $job_xml->country;
-        $job['state'] = (string) $job_xml->state;
-        $job['city'] = (string) $job_xml->city;
-        $job['postal_code'] = (string) $job_xml->postal_code;
-        
-        // Employment details
-        $job['employment_type'] = $this->normalize_employment_type((string) $job_xml->job_type);
-        $job['remote_work'] = $this->detect_remote_work($job);
-        
-        return $job;
     }
     
     /**
@@ -459,14 +489,10 @@ class Job_Killer_WhatJobs_Provider {
         
         // Skip if description is empty or too short
         $description = strip_tags($job_data['description']);
-        $min_length = get_option('job_killer_settings')['description_min_length'] ?? 100;
+        $settings = get_option('job_killer_settings', array());
+        $min_length = $settings['description_min_length'] ?? 100;
         
         if (strlen($description) < $min_length) {
-            return false;
-        }
-        
-        // Skip if age_days is not 0 (we only want today's jobs)
-        if ($job_data['age_days'] !== 0) {
             return false;
         }
         
@@ -518,7 +544,7 @@ class Job_Killer_WhatJobs_Provider {
             // Prepare post data
             $post_data = array(
                 'post_title' => sanitize_text_field($job_data['title']),
-                'post_content' => wp_kses_post($job_data['description']),
+                'post_content' => wp_kses_post($this->clean_description($job_data['description'])),
                 'post_status' => 'publish',
                 'post_type' => 'job_listing',
                 'post_author' => 1,
@@ -550,10 +576,12 @@ class Job_Killer_WhatJobs_Provider {
             return true;
             
         } catch (Exception $e) {
-            $this->helper->log('error', 'whatjobs', 
-                'Failed to import job: ' . $e->getMessage(),
-                array('job_data' => $job_data, 'error' => $e->getMessage())
-            );
+            if ($this->helper) {
+                $this->helper->log('error', 'whatjobs', 
+                    'Failed to import job: ' . $e->getMessage(),
+                    array('error' => $e->getMessage())
+                );
+            }
             return false;
         }
     }
@@ -608,19 +636,56 @@ class Job_Killer_WhatJobs_Provider {
         }
         
         // Set category based on WhatJobs category
-        if (!empty($job_data['category'])) {
-            $category = sanitize_text_field($job_data['category']);
+        if (!empty($job_data['site'])) {
+            $category = sanitize_text_field($job_data['site']);
             $this->set_or_create_term($post_id, $category, 'job_listing_category');
         }
         
         // Set region based on location
-        if (!empty($job_data['state'])) {
-            $region = sanitize_text_field($job_data['state']);
-            $this->set_or_create_term($post_id, $region, 'job_listing_region');
-        } elseif (!empty($job_data['city'])) {
-            $region = sanitize_text_field($job_data['city']);
+        if (!empty($job_data['location'])) {
+            $region = $this->extract_region_from_location($job_data['location']);
             $this->set_or_create_term($post_id, $region, 'job_listing_region');
         }
+    }
+    
+    /**
+     * Extract region from location string
+     */
+    private function extract_region_from_location($location) {
+        // Brazilian states mapping
+        $states = array(
+            'AC' => 'Acre', 'AL' => 'Alagoas', 'AP' => 'Amapá', 'AM' => 'Amazonas',
+            'BA' => 'Bahia', 'CE' => 'Ceará', 'DF' => 'Distrito Federal', 'ES' => 'Espírito Santo',
+            'GO' => 'Goiás', 'MA' => 'Maranhão', 'MT' => 'Mato Grosso', 'MS' => 'Mato Grosso do Sul',
+            'MG' => 'Minas Gerais', 'PA' => 'Pará', 'PB' => 'Paraíba', 'PR' => 'Paraná',
+            'PE' => 'Pernambuco', 'PI' => 'Piauí', 'RJ' => 'Rio de Janeiro', 'RN' => 'Rio Grande do Norte',
+            'RS' => 'Rio Grande do Sul', 'RO' => 'Rondônia', 'RR' => 'Roraima', 'SC' => 'Santa Catarina',
+            'SP' => 'São Paulo', 'SE' => 'Sergipe', 'TO' => 'Tocantins'
+        );
+        
+        $location_upper = strtoupper($location);
+        
+        // Check for state abbreviations
+        foreach ($states as $abbr => $name) {
+            if (strpos($location_upper, $abbr) !== false) {
+                return $name;
+            }
+        }
+        
+        // Check for full state names
+        foreach ($states as $name) {
+            if (strpos($location_upper, strtoupper($name)) !== false) {
+                return $name;
+            }
+        }
+        
+        // Extract city (first part before comma or dash)
+        $parts = preg_split('/[,\-]/', $location);
+        if (!empty($parts[0])) {
+            return trim($parts[0]);
+        }
+        
+        return $location;
     }
     
     /**

@@ -86,10 +86,6 @@ class Job_Killer_Core {
             $this->rss_providers = new Job_Killer_Rss_Providers();
         }
         
-        if (class_exists('Job_Killer_Providers_Manager')) {
-            $this->providers_manager = new Job_Killer_Providers_Manager();
-        }
-        
         if (class_exists('Job_Killer_Structured_Data')) {
             $this->structured_data = new Job_Killer_Structured_Data();
         }
@@ -319,11 +315,6 @@ class Job_Killer_Core {
     public function run_import() {
         if ($this->importer && method_exists($this->importer, 'run_scheduled_import')) {
             $this->importer->run_scheduled_import();
-        }
-        
-        // Also run auto feeds import
-        if ($this->providers_manager && method_exists($this->providers_manager, 'run_auto_imports')) {
-            $this->providers_manager->run_auto_imports();
         }
     }
     

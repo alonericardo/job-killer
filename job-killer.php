@@ -127,6 +127,8 @@ final class Job_Killer {
         // Core files
         require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-helper.php';
         require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-cache.php';
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-providers-registry.php';
+        require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-feeds-store.php';
         require_once JOB_KILLER_PLUGIN_DIR . 'includes/class-job-killer-core.php';
         
         // Admin files (only in admin)
